@@ -1,0 +1,209 @@
+# ================================
+# 0️⃣ Bibliotecas necessárias
+# ================================
+library(dplyr)
+library(survival)
+library(survminer)
+library(tibble)
+
+# ================================
+# 1️⃣ Ler expressão e filtrar genes de interesse
+# ================================
+exp <- read.table("TCGA-PDAC_RNAseq-Normalized_150_amostras.txt", header = TRUE)
+
+# Lista de genes de interesse
+genes_interesse <- c(
+  "ANKRD10-IT1","C1RL-AS1","CCDC18-AS1","ERVK13-1","JPX",
+  "LINC-PINT","LINC00174","LINC00342","LINC00665","LINC01091",
+  "LINC02086","LINC02762","MAP3K2-DT","RAD51-AS1","SLC25A25-AS1",
+  "SNHG12","SNHG3","XIST","SLC9A3-AS1","LINC01814",
+  "PCAT7","LINC02381","MIR29B2CHG","KDM7A-DT","DLEU1",
+  "GATA6-AS1","C6orf223","NEAT1","AFAP1-AS1","MEG3",
+  "RASSF8-AS1","HCG11","MRPS30-DT","LINC00472","GABPB1-AS1",
+  "MIR222HG","MMP25-AS1","KMT2E-AS1","SPINT1-AS1","PVT1",
+  "HLA-F-AS1","GAS5","SNHG5","MIRLET7BHG"
+)
+
+genes_interesse <- genes_unicos_df$gene
+# Filtrar apenas genes de interesse
+exp <- exp[exp$X %in% genes_interesse, ]
+
+# ================================
+# 2️⃣ Ajustar nomes de colunas e remover duplicados
+# ================================
+colnames(exp) <- gsub("\\.bam.*", "", colnames(exp))   
+colnames(exp) <- gsub("\\.", "-", colnames(exp))       
+colnames(exp) <- gsub("01A.*", "01A", colnames(exp))
+
+# Remover duplicados mantendo maior soma
+exp <- exp %>%
+  rowwise() %>%
+  mutate(total = sum(c_across(-X), na.rm = TRUE)) %>%
+  ungroup() %>%
+  group_by(X) %>%
+  slice_max(total, n = 1) %>%
+  ungroup() %>%
+  select(-total)
+
+# Salvar nomes dos genes e definir rownames
+gene_names <- exp$X
+exp <- as.data.frame(exp)
+rownames(exp) <- gene_names
+exp <- exp[, -1]
+
+# ================================
+# 3️⃣ Ler dados clínicos
+# ================================
+clin <- read.table(
+  "~/Paper miRNA/Figuras certas/sobrevida/TCGA-PDAC_mRNAsi-Stemness.txt",
+  sep = "\t", dec = ".", header = TRUE, check.names = FALSE
+)
+
+# ================================
+# 4️⃣ Alinhar IDs entre expressão e clínicos
+# ================================
+common_IDs <- intersect(clin$ID, colnames(exp))
+if(length(common_IDs) == 0) stop("Nenhum ID comum encontrado!")
+
+exp <- exp[, common_IDs]
+clin <- clin[clin$ID %in% common_IDs, ]
+
+# Ordenar
+clin <- clin[order(clin$ID), ]
+exp <- exp[, order(colnames(exp))]
+
+# ================================
+# 5️⃣ Transpor e binarizar expressão
+# ================================
+gene.exp <- t(exp)
+exp.bin <- as.data.frame(gene.exp)
+for(i in 1:ncol(exp.bin)) {
+  med <- median(exp.bin[, i], na.rm = TRUE)
+  exp.bin[, i] <- ifelse(exp.bin[, i] > med, 1, 0)
+}
+colnames(exp.bin) <- colnames(gene.exp)
+
+# Salvar binarizado
+write.table(exp.bin,
+            "~/Paper miRNA/Figuras certas/sobrevida/BinaryGeneExpression_PDACmRNAsiSamples.txt",
+            sep = "\t", dec = ".", row.names = TRUE, col.names = NA)
+
+# ================================
+# 6️⃣ Preparar dados clínicos para Cox
+# ================================
+clin$OS <- as.numeric(as.character(clin$OS))
+clin$OS_time <- as.numeric(as.character(clin$OS_time))
+clin.os <- clin[, c("ID", "OS_time", "OS")]
+clin.os <- clin.os[complete.cases(clin.os), ]
+
+# ================================
+# 7️⃣ Análise Cox univariada
+# ================================
+final.cox <- merge(clin.os, exp.bin, by.x = "ID", by.y = "row.names")
+rownames(final.cox) <- final.cox$ID
+final.cox <- final.cox[, -1]
+
+# Função Cox segura
+safe_cox <- function(covariate, data) {
+  tryCatch({
+    formula <- as.formula(paste("Surv(OS_time, OS) ~", covariate))
+    model <- coxph(formula, data = data)
+    s <- summary(model)
+    beta <- s$coef[1,1]
+    HR <- s$coef[1,2]
+    lower <- s$conf.int[1,"lower .95"]
+    upper <- s$conf.int[1,"upper .95"]
+    wald <- s$wald["test"]
+    p <- s$wald["pvalue"]
+    return(c(beta=beta, HR=HR, lower=lower, upper=upper, wald.test=wald, p.value=p))
+  }, error=function(e) {
+    return(c(beta=NA, HR=NA, lower=NA, upper=NA, wald.test=NA, p.value=NA))
+  })
+}
+
+covariates <- colnames(final.cox)[-(1:2)]
+univ_results <- lapply(covariates, function(x) safe_cox(x, final.cox))
+names(univ_results) <- covariates
+res <- as.data.frame(t(as.data.frame(univ_results, check.names=FALSE)))
+res <- rownames_to_column(res, var="gene_safe")
+
+# Ajustar nomes originais
+gene_mapping <- setNames(covariates, covariates)
+res$gene_original <- gene_mapping[res$gene_safe]
+
+res <- res[complete.cases(res), ]
+res$FDR <- p.adjust(res$p.value, method = "fdr")
+
+# Reorganizar colunas
+res <- res[, c("gene_original","gene_safe","beta","HR","lower","upper","wald.test.test","p.value.pvalue","FDR")]
+res <- merge(res, merge_5, by.x=1, by.y=1)
+# Genes significativos
+res.final <- subset(res, p.value.pvalue < 0.05)
+if(nrow(res.final) == 0) stop("Nenhum gene significativo!")
+
+# ================================
+# 8️⃣ Preparar dados para Kaplan-Meier
+# ================================
+genes_signif_original <- res.final$gene_original
+gene.bin <- exp.bin[, colnames(exp.bin) %in% genes_signif_original, drop = FALSE]
+
+clin.os$OS_years <- clin.os$OS_time / 365
+final.selec <- merge(clin.os[, c("ID","OS_years","OS")], gene.bin, by.x="ID", by.y="row.names")
+rownames(final.selec) <- final.selec$ID
+final.selec <- final.selec[, -1]
+
+# ================================
+# 9️⃣ Gerar Kaplan-Meier plots
+# ================================
+output_dir <- "~/Doutorado/Rede ceRNA Stemness/05/Trabalhar aqui/Rede Filtrada"
+if(!dir.exists(output_dir)) dir.create(output_dir, recursive=TRUE)
+
+genes_to_plot <- colnames(final.selec)[-(1:2)]
+
+for(gene in genes_to_plot){
+  tryCatch({
+    if(!gene %in% colnames(final.selec)) next
+    if(length(unique(final.selec[[gene]][!is.na(final.selec[[gene]])])) < 2) next
+    if(sum(complete.cases(final.selec[, c("OS_years","OS",gene)])) < 10) next
+    
+    surv_fit <- survfit(Surv(OS_years, OS) ~ final.selec[[gene]], data=final.selec)
+    surv_diff <- survdiff(Surv(OS_years, OS) ~ final.selec[[gene]], data=final.selec)
+    pval_km <- format.pval(pchisq(q=surv_diff$chisq, df=length(surv_diff$n)-1, lower.tail=FALSE), digits=2, scientific=FALSE)
+    
+    km_plot <- ggsurvplot(
+      fit=surv_fit, data=final.selec,
+      title=gene,
+      legend.labs=c(paste0("Low (n=",sum(final.selec[[gene]]==0, na.rm=TRUE),")"),
+                    paste0("High (n=",sum(final.selec[[gene]]==1, na.rm=TRUE),")")),
+      size=1,
+      font.title=c(19,"bold","black"),
+      font.x=c(12,"bold","black"),
+      font.y=c(12,"bold","black"),
+      font.tickslab=c(11,"black"),
+      palette=c("#314792","#E62231"),
+      legend.title="",
+      legend=c(0.84,0.95),
+      surv.scale="percent",
+      xlab="Time (years)",
+      ylab="Overall survival rate (%)",
+      break.x.by=1,
+      risk.table=TRUE,
+      risk.table.title="Number at risk",
+      risk.table.fontsize=3.75,
+      risk.table.height=0.2,
+      risk.table.y.text=FALSE,
+      pval=paste("Log-rank\np =", pval_km),
+      pval.size=3.75,
+      conf.int=FALSE
+    )
+    
+    safe_filename <- gsub("[^A-Za-z0-9_-]","_",gene)
+    svg(paste0(output_dir,"KaplanMeier_",safe_filename,".svg"),
+         width=7,height=7)
+    print(km_plot)
+    dev.off()
+    
+    cat("Plot salvo:", gene, "\n")
+    
+  }, error=function(e){ cat("Erro:", gene, "-", e$message,"\n") })
+}
