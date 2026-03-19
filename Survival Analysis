@@ -11,22 +11,32 @@ library(tibble)
 # ================================
 exp <- read.table("TCGA-PDAC_RNAseq-Normalized_150_amostras.txt", header = TRUE)
 
-# Lista de genes de interesse
+# Lista de genes de interesse (CORRIGIDO)
 genes_interesse <- c(
-  "ANKRD10-IT1","C1RL-AS1","CCDC18-AS1","ERVK13-1","JPX",
-  "LINC-PINT","LINC00174","LINC00342","LINC00665","LINC01091",
-  "LINC02086","LINC02762","MAP3K2-DT","RAD51-AS1","SLC25A25-AS1",
-  "SNHG12","SNHG3","XIST","SLC9A3-AS1","LINC01814",
-  "PCAT7","LINC02381","MIR29B2CHG","KDM7A-DT","DLEU1",
-  "GATA6-AS1","C6orf223","NEAT1","AFAP1-AS1","MEG3",
-  "RASSF8-AS1","HCG11","MRPS30-DT","LINC00472","GABPB1-AS1",
-  "MIR222HG","MMP25-AS1","KMT2E-AS1","SPINT1-AS1","PVT1",
-  "HLA-F-AS1","GAS5","SNHG5","MIRLET7BHG"
+  "ABHD17C","ADAP1","AGMAT","AGR2","AKR1B10","ALDH3A1","ANXA10","AR",
+  "ARHGEF25","ARHGEF26","ARHGEF39","ASPHD2","ASPM","BCAS1","BTNL8",
+  "C14orf132","C2orf88","C9orf152","CALD1","CDC25A","CDCA3","CDCA7","CDCA8",
+  "CHRNA5","CKMT1B","CKS2","CLEC11A","CNNM1","CSTA","CYP2S1","CYSTM1",
+  "DNAH2","DTNA","DZIP1","EFEMP1","EFEMP2","EML1","EVC","FERMT2","FGFR1",
+  "FHL1","FIBIN","FOXA3","GALNT6","GAS1","GAS7","GJA1","GPX2","GUCY1A2",
+  "HAND2","HAS3","HEG1","HOXC9","HPDL","HR","HRK","HSPB8","IL1R1","IL1R2",
+  "IQGAP3","JAM2","JPH1","KAZALD1","KCNK1","KCNK10","KIF15","KIF2C","KIF4A",
+  "LPCAT4","LMCD1","MAPK10","MEDAG","MGAM","MICU3","MISP","MKI67","MSRB3",
+  "MUC1","MXRA7","MYH10","NDN","NKD2","NLGN2","NMU","NQO1","NTS","OASL",
+  "OLFML3","ONECUT3","OOEP","PCDH9","PDLIM3","PIP5K1B","PITX1","PKHD1",
+  "PLAC8","PLXDC2","PPARG","PRICKLE1","PRKD1","PTPRS","PTTG1","PXDN",
+  "RAB23","RAB3IL1","RAPGEFL1","RBMS3","RECK","RGMA","SFN","SHH","SIM2",
+  "SKA3","SLC27A2","SLC38A5","SLC6A8","SLC9A2","SMO","SNED1","SPC24",
+  "ST6GALNAC1","SVEP1","SYDE1","SYTL5","TGFB3","TMEM158","TNS1","TRIM31",
+  "TRIM7","TUBA1A","XK","ZBTB16","ZNF695"
 )
 
-genes_interesse <- genes_unicos_df$gene
 # Filtrar apenas genes de interesse
 exp <- exp[exp$X %in% genes_interesse, ]
+
+# Verificar se genes foram encontrados
+cat("Genes encontrados:", nrow(exp), "de", length(genes_interesse), "\n")
+if(nrow(exp) == 0) stop("Nenhum gene de interesse encontrado nos dados!")
 
 # ================================
 # 2️⃣ Ajustar nomes de colunas e remover duplicados
@@ -43,7 +53,7 @@ exp <- exp %>%
   group_by(X) %>%
   slice_max(total, n = 1) %>%
   ungroup() %>%
-  select(-total)
+  dplyr::select(-total)
 
 # Salvar nomes dos genes e definir rownames
 gene_names <- exp$X
@@ -63,6 +73,7 @@ clin <- read.table(
 # 4️⃣ Alinhar IDs entre expressão e clínicos
 # ================================
 common_IDs <- intersect(clin$ID, colnames(exp))
+cat("IDs comuns encontrados:", length(common_IDs), "\n")
 if(length(common_IDs) == 0) stop("Nenhum ID comum encontrado!")
 
 exp <- exp[, common_IDs]
@@ -96,55 +107,79 @@ clin$OS_time <- as.numeric(as.character(clin$OS_time))
 clin.os <- clin[, c("ID", "OS_time", "OS")]
 clin.os <- clin.os[complete.cases(clin.os), ]
 
+cat("Amostras com dados clínicos completos:", nrow(clin.os), "\n")
+
 # ================================
-# 7️⃣ Análise Cox univariada
+# 7️⃣ Análise Cox univariada (CORRIGIDO)
 # ================================
 final.cox <- merge(clin.os, exp.bin, by.x = "ID", by.y = "row.names")
 rownames(final.cox) <- final.cox$ID
 final.cox <- final.cox[, -1]
 
-# Função Cox segura
+# Função Cox segura (MELHORADA)
 safe_cox <- function(covariate, data) {
   tryCatch({
+    # Verificar se há variação no covariate
+    if(length(unique(data[[covariate]])) < 2) {
+      return(c(beta=NA, HR=NA, lower=NA, upper=NA, wald.test=NA, p.value=NA))
+    }
+    
     formula <- as.formula(paste("Surv(OS_time, OS) ~", covariate))
     model <- coxph(formula, data = data)
     s <- summary(model)
+    
     beta <- s$coef[1,1]
     HR <- s$coef[1,2]
     lower <- s$conf.int[1,"lower .95"]
     upper <- s$conf.int[1,"upper .95"]
     wald <- s$wald["test"]
     p <- s$wald["pvalue"]
+    
     return(c(beta=beta, HR=HR, lower=lower, upper=upper, wald.test=wald, p.value=p))
   }, error=function(e) {
+    cat("Erro no gene", covariate, ":", e$message, "\n")
     return(c(beta=NA, HR=NA, lower=NA, upper=NA, wald.test=NA, p.value=NA))
   })
 }
 
 covariates <- colnames(final.cox)[-(1:2)]
+cat("Analisando", length(covariates), "genes...\n")
+
 univ_results <- lapply(covariates, function(x) safe_cox(x, final.cox))
 names(univ_results) <- covariates
 res <- as.data.frame(t(as.data.frame(univ_results, check.names=FALSE)))
-res <- rownames_to_column(res, var="gene_safe")
+res <- rownames_to_column(res, var="gene")
 
-# Ajustar nomes originais
-gene_mapping <- setNames(covariates, covariates)
-res$gene_original <- gene_mapping[res$gene_safe]
+# Remover linhas com todos os valores NA
+res <- res[!apply(is.na(res[,-1]), 1, all), ]
 
-res <- res[complete.cases(res), ]
-res$FDR <- p.adjust(res$p.value, method = "fdr")
+# Ajustar p-values apenas para valores não-NA
+valid_rows <- !is.na(res$p.value)
+if(sum(valid_rows) > 0) {
+  res$FDR <- NA
+  res$FDR[valid_rows] <- p.adjust(res$p.value[valid_rows], method = "fdr")
+}
 
-# Reorganizar colunas
-res <- res[, c("gene_original","gene_safe","beta","HR","lower","upper","wald.test.test","p.value.pvalue","FDR")]
-res <- merge(res, merge_5, by.x=1, by.y=1)
-# Genes significativos
-res.final <- subset(res, p.value.pvalue < 0.05)
-if(nrow(res.final) == 0) stop("Nenhum gene significativo!")
+# Mostrar resultados
+cat("Genes analisados com sucesso:", sum(valid_rows), "\n")
+cat("Genes com p < 0.05:", sum(res$p.value < 0.05, na.rm = TRUE), "\n")
+
+# Genes significativos (CORRIGIDO)
+res.final <- subset(res, p.value.pvalue < 0.05 & !is.na(p.value.pvalue))
+if(nrow(res.final) == 0) {
+  cat("Nenhum gene significativo encontrado!\n")
+  cat("P-values mínimos encontrados:\n")
+  print(head(res[order(res$p.value, na.last = TRUE), c("gene", "p.value", "HR")]))
+  stop("Nenhum gene significativo!")
+}
+
+cat("Genes significativos encontrados:", nrow(res.final), "\n")
+print(res.final[, c("gene", "HR", "p.value", "FDR")])
 
 # ================================
 # 8️⃣ Preparar dados para Kaplan-Meier
 # ================================
-genes_signif_original <- res.final$gene_original
+genes_signif_original <- res.final$gene
 gene.bin <- exp.bin[, colnames(exp.bin) %in% genes_signif_original, drop = FALSE]
 
 clin.os$OS_years <- clin.os$OS_time / 365
@@ -155,7 +190,7 @@ final.selec <- final.selec[, -1]
 # ================================
 # 9️⃣ Gerar Kaplan-Meier plots
 # ================================
-output_dir <- "~/Doutorado/Rede ceRNA Stemness/05/Trabalhar aqui/Rede Filtrada"
+output_dir <- "~/Doutorado/Rede ceRNA Stemness/Novos Resultados"
 if(!dir.exists(output_dir)) dir.create(output_dir, recursive=TRUE)
 
 genes_to_plot <- colnames(final.selec)[-(1:2)]
@@ -198,12 +233,261 @@ for(gene in genes_to_plot){
     )
     
     safe_filename <- gsub("[^A-Za-z0-9_-]","_",gene)
-    svg(paste0(output_dir,"KaplanMeier_",safe_filename,".svg"),
-         width=7,height=7)
+    svg(paste0(output_dir,"/KaplanMeier_",safe_filename,".svg"),
+        width=7,height=7)
     print(km_plot)
     dev.off()
     
     cat("Plot salvo:", gene, "\n")
+    
+  }, error=function(e){ cat("Erro:", gene, "-", e$message,"\n") })
+}
+
+# Combinar gráficos
+# ================================
+# 🔟 Gráfico Combinado - Layout em Grade (NOVO)
+# ================================
+
+cat("\n=== Criando gráfico combinado em grade ===\n")
+
+# Coletar todos os plots individuais
+individual_plots <- list()
+valid_genes_for_grid <- c()
+
+for(gene in genes_to_plot){
+  tryCatch({
+    if(!gene %in% colnames(final.selec)) next
+    if(length(unique(final.selec[[gene]][!is.na(final.selec[[gene]])])) < 2) next
+    if(sum(complete.cases(final.selec[, c("OS_years","OS",gene)])) < 10) next
+    
+    surv_fit <- survfit(Surv(OS_years, OS) ~ final.selec[[gene]], data=final.selec)
+    surv_diff <- survdiff(Surv(OS_years, OS) ~ final.selec[[gene]], data=final.selec)
+    pval_km <- format.pval(pchisq(q=surv_diff$chisq, df=length(surv_diff$n)-1, lower.tail=FALSE), digits=2, scientific=FALSE)
+    
+    km_plot <- ggsurvplot(
+      fit=surv_fit, data=final.selec,
+      title=gene,
+      legend.labs=c(paste0("Low (n=",sum(final.selec[[gene]]==0, na.rm=TRUE),")"),
+                    paste0("High (n=",sum(final.selec[[gene]]==1, na.rm=TRUE),")")),
+      size=1,
+      font.title=c(14,"bold","black"),  # Título um pouco menor para o grid
+      font.x=c(10,"bold","black"),      # Fonte menor para o grid
+      font.y=c(10,"bold","black"),      # Fonte menor para o grid
+      font.tickslab=c(9,"black"),       # Ticks menores para o grid
+      palette=c("#314792","#E62231"),
+      legend.title="",
+      legend=c(0.75,0.95),              # Ajustar posição da legenda
+      surv.scale="percent",
+      xlab="Time (years)",
+      ylab="Overall survival rate (%)",
+      break.x.by=1,
+      risk.table=TRUE,
+      risk.table.title="Number at risk",
+      risk.table.fontsize=2.5,         # Fonte menor para risk table
+      risk.table.height=0.15,          # Risk table menor
+      risk.table.y.text=FALSE,
+      pval=paste("Log-rank\np =", pval_km),
+      pval.size=2.5,                   # P-value menor
+      conf.int=FALSE
+    )
+    
+    # Armazenar o plot
+    individual_plots[[gene]] <- km_plot
+    valid_genes_for_grid <- c(valid_genes_for_grid, gene)
+    
+    cat("Plot preparado para grid:", gene, "\n")
+    
+  }, error=function(e){ 
+    cat("Erro ao preparar plot para", gene, ":", e$message,"\n") 
+  })
+}
+
+# Criar layouts em grade se houver plots válidos
+if(length(individual_plots) > 0) {
+  
+  # Carregar biblioteca necessária
+  if(!require(gridExtra, quietly = TRUE)) {
+    install.packages("gridExtra")
+    library(gridExtra)
+  }
+  
+  n_plots <- length(individual_plots)
+  cat("Criando grid com", n_plots, "plots\n")
+  
+  # Determinar layout da grade baseado no número de plots
+  if(n_plots == 1) {
+    ncols <- 1; nrows <- 1
+  } else if(n_plots <= 2) {
+    ncols <- 2; nrows <- 1
+  } else if(n_plots <= 4) {
+    ncols <- 2; nrows <- 2
+  } else if(n_plots <= 6) {
+    ncols <- 3; nrows <- 2
+  } else if(n_plots <= 9) {
+    ncols <- 3; nrows <- 3
+  } else if(n_plots <= 12) {
+    ncols <- 4; nrows <- 3
+  } else if(n_plots <= 16) {
+    ncols <- 4; nrows <- 4
+  } else {
+    # Para muitos plots, criar múltiplas páginas
+    ncols <- 4; nrows <- 4
+  }
+  
+  # Função para criar uma página de grid
+  create_grid_page <- function(plots_subset, page_num = 1) {
+    tryCatch({
+      # Extrair apenas os plots (não os objetos ggsurvplot completos)
+      plot_objects <- lapply(plots_subset, function(x) x$plot)
+      
+      # Criar o grid
+      grid_plot <- do.call(grid.arrange, c(plot_objects, ncol = ncols))
+      
+      return(grid_plot)
+      
+    }, error = function(e) {
+      cat("Erro ao criar grid da página", page_num, ":", e$message, "\n")
+      return(NULL)
+    })
+  }
+  
+  # Se há muitos plots, dividir em páginas
+  plots_per_page <- ncols * nrows
+  
+  if(n_plots <= plots_per_page) {
+    # Uma única página
+    tryCatch({
+      # Calcular dimensões
+      plot_width <- ncols * 5 + 1
+      plot_height <- nrows * 4 + 1
+      
+      # Criar grid
+      svg(paste0(output_dir, "/KaplanMeier_Combined_Grid.svg"),
+          width = plot_width, height = plot_height)
+      
+      grid_result <- create_grid_page(individual_plots)
+      
+      dev.off()
+      
+      cat("Grid combinado salvo com", n_plots, "plots em", ncols, "x", nrows, "layout\n")
+      
+    }, error = function(e) {
+      cat("Erro ao salvar grid único:", e$message, "\n")
+    })
+    
+  } else {
+    # Múltiplas páginas
+    n_pages <- ceiling(n_plots / plots_per_page)
+    
+    for(page in 1:n_pages) {
+      tryCatch({
+        start_idx <- (page - 1) * plots_per_page + 1
+        end_idx <- min(page * plots_per_page, n_plots)
+        
+        plots_subset <- individual_plots[start_idx:end_idx]
+        
+        # Calcular dimensões
+        current_plots <- length(plots_subset)
+        current_rows <- ceiling(current_plots / ncols)
+        plot_width <- ncols * 5 + 1
+        plot_height <- current_rows * 4 + 1
+        
+        # Criar grid para esta página
+        svg(paste0(output_dir, "/KaplanMeier_Combined_Grid_Page", page, ".svg"),
+            width = plot_width, height = plot_height)
+        
+        grid_result <- create_grid_page(plots_subset, page)
+        
+        dev.off()
+        
+        cat("Grid página", page, "salvo com", current_plots, "plots\n")
+        
+      }, error = function(e) {
+        cat("Erro ao salvar grid página", page, ":", e$message, "\n")
+      })
+    }
+    
+    cat("Total de", n_pages, "páginas de grid criadas\n")
+  }
+  
+  # Criar também uma versão compacta com todos os plots (se não for muitos)
+  if(n_plots <= 20) {
+    tryCatch({
+      # Layout mais compacto
+      compact_ncols <- ifelse(n_plots <= 9, 3, ifelse(n_plots <= 16, 4, 5))
+      compact_nrows <- ceiling(n_plots / compact_ncols)
+      
+      # Dimensões menores para versão compacta
+      compact_width <- compact_ncols * 4
+      compact_height <- compact_nrows * 3.5
+      
+      svg(paste0(output_dir, "/KaplanMeier_Combined_Compact.svg"),
+          width = compact_width, height = compact_height)
+      
+      # Extrair plots e criar grid compacto
+      compact_plots <- lapply(individual_plots, function(x) x$plot)
+      compact_grid <- do.call(grid.arrange, c(compact_plots, ncol = compact_ncols))
+      
+      dev.off()
+      
+      cat("Versão compacta salva com", n_plots, "plots em", compact_ncols, "x", compact_nrows, "layout\n")
+      
+    }, error = function(e) {
+      cat("Erro ao criar versão compacta:", e$message, "\n")
+    })
+  }
+  
+} else {
+  cat("Nenhum plot válido para criar grid\n")
+}
+
+# Continuar com os plots individuais originais
+cat("\n=== Salvando plots individuais ===\n")
+
+for(gene in genes_to_plot){
+  tryCatch({
+    if(!gene %in% colnames(final.selec)) next
+    if(length(unique(final.selec[[gene]][!is.na(final.selec[[gene]])])) < 2) next
+    if(sum(complete.cases(final.selec[, c("OS_years","OS",gene)])) < 10) next
+    
+    surv_fit <- survfit(Surv(OS_years, OS) ~ final.selec[[gene]], data=final.selec)
+    surv_diff <- survdiff(Surv(OS_years, OS) ~ final.selec[[gene]], data=final.selec)
+    pval_km <- format.pval(pchisq(q=surv_diff$chisq, df=length(surv_diff$n)-1, lower.tail=FALSE), digits=2, scientific=FALSE)
+    
+    km_plot <- ggsurvplot(
+      fit=surv_fit, data=final.selec,
+      title=gene,
+      legend.labs=c(paste0("Low (n=",sum(final.selec[[gene]]==0, na.rm=TRUE),")"),
+                    paste0("High (n=",sum(final.selec[[gene]]==1, na.rm=TRUE),")")),
+      size=1,
+      font.title=c(19,"bold","black"),
+      font.x=c(12,"bold","black"),
+      font.y=c(12,"bold","black"),
+      font.tickslab=c(11,"black"),
+      palette=c("#314792","#E62231"),
+      legend.title="",
+      legend=c(0.84,0.95),
+      surv.scale="percent",
+      xlab="Time (years)",
+      ylab="Overall survival rate (%)",
+      break.x.by=1,
+      risk.table=TRUE,
+      risk.table.title="Number at risk",
+      risk.table.fontsize=3.75,
+      risk.table.height=0.2,
+      risk.table.y.text=FALSE,
+      pval=paste("Log-rank\np =", pval_km),
+      pval.size=3.75,
+      conf.int=FALSE
+    )
+    
+    safe_filename <- gsub("[^A-Za-z0-9_-]","_",gene)
+    svg(paste0(output_dir,"/KaplanMeier_",safe_filename,".svg"),
+        width=7,height=7)
+    print(km_plot)
+    dev.off()
+    
+    cat("Plot individual salvo:", gene, "\n")
     
   }, error=function(e){ cat("Erro:", gene, "-", e$message,"\n") })
 }
